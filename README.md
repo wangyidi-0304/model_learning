@@ -83,13 +83,139 @@ result = classifier("I love this product!")
    - **答案定位**：通过 `offset_mapping` 映射 token 位置到原始文本
    - **特殊标记**：不可回答时使用 `[CLS]` 标记索引
  
-3. **模型训练**  
-   ```python
-   model = AutoModelForQuestionAnswering.from_pretrained("distilbert-base-uncased")
-   trainer = Trainer(
+3. **模型训练**
+ ```python
+  model = AutoModelForQuestionAnswering.from_pretrained("distilbert-base-uncased")
+  trainer = Trainer(
        model,
        args=TrainingArguments(learning_rate=2e-5, batch_size=64, epochs=3),
        train_dataset=tokenized_datasets["train"],
        eval_dataset=tokenized_datasets["validation"]
    )
   ```
+## PEFT库LoRA实战 - OpenAI Whisper-large-v2 语音识别微调
+ 
+## 核心亮点
+1. **LoRA微调技术**：在Whisper-large-v2模型上实现ASR任务的高效微调
+2. **int8量化训练**：降低显存消耗同时保持精度（训练显存减少约75%）
+3. **端到端流程**：涵盖数据准备、模型配置、训练、保存和推理全流程
+ 
+---
+ 
+## 1. 全局参数设置
+```python
+model_name_or_path = "openai/whisper-large-v2"
+model_dir = "models/whisper-large-v2-asr-int8"
+language = "Chinese (China)"
+language_abbr = "zh-CN"
+task = "transcribe"
+dataset_name = "mozilla-foundation/common_voice_11_0"
+batch_size = 64
+```
+## 2. 数据准备
+数据集加载
+```python
+from datasets import load_dataset, DatasetDict
+ 
+common_voice = DatasetDict()
+common_voice["train"] = load_dataset(dataset_name, language_abbr, split="train")
+common_voice["validation"] = load_dataset(dataset_name, language_abbr, split="validation")
+```
+关键预处理
+字段清理：移除accent, age, client_id等无关字段
+音频降采样：48kHz → 16kHz（Whisper预训练采样率）
+数据抽样（演示用）：
+训练集：640个样本
+验证集：320个样本
+
+数据预处理函数
+```pythonn
+def prepare_dataset(batch):
+    audio = batch["audio"]
+    batch["input_features"] = feature_extractor(audio["array"], sampling_rate=16000).input_features[0]
+    batch["labels"] = tokenizer(batch["sentence"]).input_ids
+    return batch
+```
+
+## 3. 模型准备
+
+int8量化加载
+```python
+from transformers import AutoModelForSpeechSeq2Seq
+ 
+model = AutoModelForSpeechSeq2Seq.from_pretrained(
+    model_name_or_path,
+    load_in_8bit=True,
+    device_map="auto"
+)
+```
+
+LoRA配置
+```python
+from peft import LoraConfig
+ 
+config = LoraConfig(
+    r=4,                  # 秩参数
+    lora_alpha=64,        # 缩放因子
+    target_modules=["q_proj", "v_proj"],  # 适配层
+    lora_dropout=0.05,
+    bias="none"
+)
+```
+模型初始化
+```python
+from peft import prepare_model_for_int8_training, get_peft_model
+ 
+model = prepare_model_for_int8_training(model)
+peft_model = get_peft_model(model, config)
+```
+训练参数
+```python
+from transformers import Seq2SeqTrainingArguments
+ 
+training_args = Seq2SeqTrainingArguments(
+    output_dir=model_dir,
+    per_device_train_batch_size=batch_size,
+    learning_rate=1e-3,
+    num_train_epochs=1,
+    evaluation_strategy="epoch",
+    per_device_eval_batch_size=batch_size,
+    logging_steps=10
+)
+训练结果
+Epoch 1/1
+Training Loss: 1.502400
+Validation Loss: 1.081281
+
+```
+## 5. 模型保存与推理
+模型保存
+```python
+trainer.save_model(model_dir)
+推理示例
+python
+from transformers import pipeline
+ 
+asr_pipeline = pipeline(
+    "automatic-speech-recognition",
+    model=peft_model,
+    tokenizer=tokenizer,
+    feature_extractor=feature_extractor
+)
+ 
+result = asr_pipeline("test_audio.wav")
+print(result["text"])  # 输出识别文本
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
